@@ -294,7 +294,7 @@ function renderSocial(){const s=store.settings.social||{};const wa=s.whatsapp?`h
 function toggleNav(){document.getElementById("nav").classList.toggle("mobile-open")}
 function showStore(){document.getElementById("admin").style.display="none";document.getElementById("storefront").style.display="block";window.scrollTo(0,0)}
 function openLogin(){openModal("Admin Login",`<div class="login-demo"><div class="brandmark">N</div><h2>Welcome back.</h2><p>Enter your private admin credentials to continue.</p><label class="label" style="text-align:left">Email</label><input id="loginEmail" autocomplete="username" class="field" style="width:100%" placeholder="Admin email"><label class="label" style="text-align:left;margin-top:12px">Password</label><input id="loginPass" type="password" autocomplete="current-password" class="field" style="width:100%" placeholder="Password"><button class="btn btn-primary" style="width:100%;margin-top:16px" onclick="login()">Enter Nova Studio</button></div>`)}
-function login(){const e=document.getElementById("loginEmail").value,p=document.getElementById("loginPass").value;if(e==="admin@novastudio.com"&&p==="Nova!2026#Studio"){sessionStorage.setItem(SESSION_KEY,"1");closeModal();showAdmin();toast("Welcome to your Nova Studio control center")}else toast("Demo credentials are incorrect.",false)}
+async function login(){const e=document.getElementById("loginEmail")?.value.trim(),p=document.getElementById("loginPass")?.value||"";if(!e||!p)return toast("Please enter your admin email and password.",false);try{const r=await fetch("/.netlify/functions/admin-login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:e,password:p})});const data=await r.json().catch(()=>({}));if(!r.ok||!data.token)return toast(data.error||"Admin login failed.",false);sessionStorage.setItem(SESSION_KEY,data.token);closeModal();showAdmin();toast("Welcome to your Nova Studio control center")}catch(err){console.error(err);toast("Unable to connect to the admin backend.",false)}}
 function logout(){sessionStorage.removeItem(SESSION_KEY);showStore();toast("Logged out")}
 function showAdmin(){document.getElementById("storefront").style.display="none";document.getElementById("admin").style.display="block";renderAdmin()}
 function renderAdmin(){document.querySelectorAll(".sidebtn[data-page]").forEach(b=>b.classList.toggle("active",b.dataset.page===currentPage));const names={dashboard:"Dashboard",games:"Games",categories:"Categories",orders:"Orders",customers:"Customers",promotions:"Sales & Promotions",coupons:"Promo Codes",requests:"Custom Requests",testimonials:"Testimonials",faq:"FAQ",analytics:"Analytics",settings:"Store Settings",style:"Style Studio"};document.getElementById("adminPageTitle").textContent=names[currentPage]||"Dashboard";document.getElementById("adminContent").innerHTML=adminPage()}
@@ -396,7 +396,7 @@ document.querySelector('[data-action="logout"]').addEventListener("click",logout
   const cc=document.getElementById("customerCurrency");if(cc)cc.value=customerCurrency();
   setLanguage(store.settings.language||"en",false);
   localStorage.setItem(STORE_KEY,JSON.stringify(store));
-  if(sessionStorage.getItem(SESSION_KEY)==="1")showAdmin();
+  if(sessionStorage.getItem(SESSION_KEY))showAdmin();
   setInterval(()=>{if(document.getElementById("storefront").style.display!=="none")renderProducts()},60000);
 })();
 </script>
