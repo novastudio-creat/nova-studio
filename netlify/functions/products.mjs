@@ -2,30 +2,37 @@ import { json } from './_db.mjs';
 import { verifyAdmin, authFail } from './_admin.mjs';
 
 function mapProduct(row) {
+  const data = row.data || {};
+
   return {
-    id: row.id,
-    title: row.title,
-    slug: row.slug,
-    category: row.category,
-    shortDescription: row.short_description || '',
-    fullDescription: row.full_description || '',
-    regularPrice: Number(row.regular_price || 0),
-    salePrice: row.sale_price == null ? null : Number(row.sale_price),
-    prices: row.prices || {},
-    coverImage: row.cover_image || '♡',
-    screenshots: row.screenshots || [],
-    demoUrl: row.demo_url || '',
-    downloadUrl: row.download_url || '',
-    features: row.features || [],
-    included: row.included || [],
-    tags: row.tags || [],
-    badge: row.badge || '',
-    isFeatured: !!row.is_featured,
-    isPopular: !!row.is_popular,
-    isNew: !!row.is_new,
+    ...data,
+    id: row.client_id || row.id,
+    title: data.title || row.name || '',
+    slug: data.slug || '',
+    category: data.category || row.category || '',
+    shortDescription: data.shortDescription || row.description || '',
+    fullDescription: data.fullDescription || row.description || '',
+    regularPrice: Number(data.regularPrice || 0),
+    salePrice: data.salePrice == null ? null : Number(data.salePrice),
+    prices: data.prices || {
+      EUR: { regular: Number(row.price_eur || 0), sale: null },
+      DZD: { regular: Number(row.price_dzd || 0), sale: null },
+      USD: { regular: Number(row.price_usd || 0), sale: null }
+    },
+    coverImage: data.coverImage || row.image || '♡',
+    screenshots: data.screenshots || [],
+    demoUrl: data.demoUrl || '',
+    downloadUrl: data.downloadUrl || '',
+    features: data.features || [],
+    included: data.included || [],
+    tags: data.tags || [],
+    badge: data.badge || '',
+    isFeatured: data.isFeatured ?? !!row.featured,
+    isPopular: data.isPopular ?? false,
+    isNew: data.isNew ?? false,
     isVisible: row.status === 'active',
-    createdAt: new Date(row.created_at).getTime(),
-    updatedAt: new Date(row.updated_at).getTime()
+    createdAt: data.createdAt || new Date(row.created_at).getTime(),
+    updatedAt: data.updatedAt || new Date(row.updated_at).getTime()
   };
 }
 
@@ -56,135 +63,164 @@ async function supabase(path, options = {}) {
   return text ? JSON.parse(text) : null;
 }
 
-export async function handler(event) {
-  try {
-    const method = event.httpMethod || 'GET';
+function productRow(product) {
+  const prices = product.prices || {};
 
-    // Public storefront: only active products
-    if (method === 'GET') {
-      const rows = await supabase(
-        'products?select=*&status=eq.active&order=created_at.desc'
-      );
+  const eur = prices.EUR || {};
+  const dzd = prices.DZD || {};
+  const usd = prices.USD || {};
 
-      return json(200, rows.map(mapProduct));
-    }
+  return {
+    client_id: String(product.id || ''),
+    name: product.title || product.name || '',
+    description:
+      product.fullDescription ||
+      product.shortDescription ||
+      product.description ||
+      '',
+    category: product.category || '',
+    price_eur: Number(eur.sale ?? eur.regular ?? 0),
+    price_dzd: Number(dzd.sale ?? dzd.regular ?? 0),
+    price_usd: Number(usd.sale ?? usd.regular ?? 0),
+    image: product.coverImage || product.image || '',
+    status: product.isVisible === false ? 'hidden' : 'active',
+    featured: !!product.isFeatured,
+    data: product,
+    updated_at: new Date().toISOString()
+  };
+}
 
-    // Everything below requires admin login
-    if (!verifyAdmin(event)) return authFail();
+async function saveProduct(product) {
+  if (!product || !product.id) {
+    throw new Error('Product id is required.');
+  }
 
-    if (method === 'POST') {
-      const body = JSON.parse(event.body || '{}');
+  const row = productRow(product);
 
-      const row = {
-        title: body.title || '',
-        slug: body.slug || '',
-        category: body.category || '',
-        short_description: body.shortDescription || '',
-        full_description: body.fullDescription || '',
-        regular_price: Number(body.regularPrice || 0),
-        sale_price:
-          body.salePrice == null || body.salePrice === ''
-            ? null
-            : Number(body.salePrice),
-        prices: body.prices || {},
-        cover_image: body.coverImage || '♡',
-        screenshots: body.screenshots || [],
-        demo_url: body.demoUrl || '',
-        download_url: body.downloadUrl || '',
-        features: body.features || [],
-        included: body.included || [],
-        tags: body.tags || [],
-        badge: body.badge || '',
-        is_featured: !!body.isFeatured,
-        is_popular: !!body.isPopular,
-        is_new: !!body.isNew,
-        status: body.isVisible === false ? 'hidden' : 'active'
-      };
+  const existing = await supabase(
+    `products?client_id=eq.${encodeURIComponent(product.id)}&select=id`
+  );
 
-      const rows = await supabase('products', {
-        method: 'POST',
+  if (existing.length) {
+    const rows = await supabase(
+      `products?client_id=eq.${encodeURIComponent(product.id)}`,
+      {
+        method: 'PATCH',
         headers: {
           Prefer: 'return=representation'
         },
         body: JSON.stringify(row)
+      }
+    );
+
+    return mapProduct(rows[0]);
+  }
+
+  const rows = await supabase('products', {
+    method: 'POST',
+    headers: {
+      Prefer: 'return=representation'
+    },
+    body: JSON.stringify(row)
+  });
+
+  return mapProduct(rows[0]);
+}
+
+export async function handler(event) {
+  try {
+    const method = event.httpMethod || 'GET';
+
+    /*
+     * GET
+     * Public users see active products.
+     * Admin users see all products.
+     */
+    if (method === 'GET') {
+      const isAdmin = verifyAdmin(event);
+
+      const query = isAdmin
+        ? 'products?select=*&order=created_at.desc'
+        : 'products?select=*&status=eq.active&order=created_at.desc';
+
+      const rows = await supabase(query);
+
+      return json(200, {
+        products: rows.map(mapProduct)
       });
-
-      return json(201, mapProduct(rows[0]));
     }
 
-    if (method === 'PUT') {
-      const body = JSON.parse(event.body || '{}');
-
-      if (!body.id) {
-        return json(400, { error: 'Product id is required.' });
-      }
-
-      const row = {
-        title: body.title || '',
-        slug: body.slug || '',
-        category: body.category || '',
-        short_description: body.shortDescription || '',
-        full_description: body.fullDescription || '',
-        regular_price: Number(body.regularPrice || 0),
-        sale_price:
-          body.salePrice == null || body.salePrice === ''
-            ? null
-            : Number(body.salePrice),
-        prices: body.prices || {},
-        cover_image: body.coverImage || '♡',
-        screenshots: body.screenshots || [],
-        demo_url: body.demoUrl || '',
-        download_url: body.downloadUrl || '',
-        features: body.features || [],
-        included: body.included || [],
-        tags: body.tags || [],
-        badge: body.badge || '',
-        is_featured: !!body.isFeatured,
-        is_popular: !!body.isPopular,
-        is_new: !!body.isNew,
-        status: body.isVisible === false ? 'hidden' : 'active',
-        updated_at: new Date().toISOString()
-      };
-
-      const rows = await supabase(
-        `products?id=eq.${encodeURIComponent(body.id)}`,
-        {
-          method: 'PATCH',
-          headers: {
-            Prefer: 'return=representation'
-          },
-          body: JSON.stringify(row)
-        }
-      );
-
-      if (!rows.length) {
-        return json(404, { error: 'Product not found.' });
-      }
-
-      return json(200, mapProduct(rows[0]));
+    /*
+     * All write operations require admin login.
+     */
+    if (!verifyAdmin(event)) {
+      return authFail();
     }
 
-    if (method === 'DELETE') {
-      const body = JSON.parse(event.body || '{}');
+    const body = JSON.parse(event.body || '{}');
+    const action = body.action || '';
 
+    /*
+     * UPSERT ONE PRODUCT
+     */
+    if (method === 'POST' && action === 'upsert') {
+      const saved = await saveProduct(body.product);
+
+      return json(200, {
+        ok: true,
+        product: saved
+      });
+    }
+
+    /*
+     * DELETE ONE PRODUCT
+     */
+    if (method === 'POST' && action === 'delete') {
       if (!body.id) {
-        return json(400, { error: 'Product id is required.' });
+        return json(400, {
+          error: 'Product id is required.'
+        });
       }
 
       await supabase(
-        `products?id=eq.${encodeURIComponent(body.id)}`,
-        { method: 'DELETE' }
+        `products?client_id=eq.${encodeURIComponent(body.id)}`,
+        {
+          method: 'DELETE'
+        }
       );
 
-      return json(200, { ok: true });
+      return json(200, {
+        ok: true
+      });
     }
 
-    return json(405, { error: 'Method not allowed.' });
+    /*
+     * REPLACE / SYNC ENTIRE LOCAL CATALOG
+     */
+    if (method === 'POST' && action === 'replace') {
+      const products = Array.isArray(body.products)
+        ? body.products
+        : [];
+
+      for (const product of products) {
+        await saveProduct(product);
+      }
+
+      return json(200, {
+        ok: true,
+        count: products.length
+      });
+    }
+
+    return json(405, {
+      error: 'Method not allowed.'
+    });
 
   } catch (error) {
     console.error(error);
+
     return json(500, {
-      error: 'Products backend error.'
+      error: error.message || 'Products backend error.'
     });
   }
 }
